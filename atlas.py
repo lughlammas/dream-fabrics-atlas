@@ -305,13 +305,13 @@ def _restore(text, store, escape_html):
 
 def inline_html(text):
     store = []
-    text = _protect(text, store)
     codes = []
 
     def grab_code(m):
         codes.append(m.group(1).strip())
         return "\ue001%d\ue001" % (len(codes) - 1)
-    text = _CODE_RE.sub(grab_code, text)
+    text = _CODE_RE.sub(grab_code, text)  # codigo inline antes dos escapes
+    text = _protect(text, store)
     text = html.escape(text, quote=False)
     text = _IMG_RE.sub(lambda m: m.group(1), text)
 
@@ -331,14 +331,20 @@ def inline_html(text):
 
 def inline_plain(text):
     store = []
+    codes = []
+
+    def grab_code(m):
+        codes.append(m.group(1).strip())
+        return "\ue001%d\ue001" % (len(codes) - 1)
+    text = _CODE_RE.sub(grab_code, text)  # codigo inline antes dos escapes
     text = _protect(text, store)
-    text = _CODE_RE.sub(lambda m: m.group(1).strip(), text)
     text = _IMG_RE.sub(lambda m: m.group(1), text)
     text = _LINK_RE.sub(lambda m: m.group(1), text)
     text = _BOLD_RE.sub(r"\2", text)
     text = _EM_STAR_RE.sub(r"\1", text)
     text = _EM_UND_RE.sub(r"\1", text)
     text = re.sub(r"</?[A-Za-z][^>]*>", "", text)  # tags HTML cruas
+    text = re.sub("\ue001(\\d+)\ue001", lambda m: codes[int(m.group(1))], text)
     return _restore(text, store, False)
 
 
