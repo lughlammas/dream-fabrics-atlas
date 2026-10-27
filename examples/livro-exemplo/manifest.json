@@ -1,0 +1,10 @@
+{
+  "atlas_version": "1.0",
+  "id": "livro_exemplo",
+  "title": "Livro de Exemplo",
+  "author": "Autor de Exemplo",
+  "volume": 1,
+  "language": "pt-BR",
+  "chapters": ["00_abertura.md", "01_capitulo_um.md"],
+  "outputs": ["txt", "epub", "pdf", "ragnarok"]
+}
