@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import uuid
 import zipfile
 
@@ -52,6 +53,23 @@ _LANG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
 # --------------------------------------------------------------------------
 # Manifesto e validacao
 # --------------------------------------------------------------------------
+
+_PENDING_RE = re.compile(r"\[\s*PREENCHER", re.IGNORECASE)
+
+
+def _pending_markers(value, path):
+    """Percorre strings do manifesto e devolve os caminhos que contem [PREENCHER."""
+    found = []
+    if isinstance(value, str):
+        if _PENDING_RE.search(value):
+            found.append(path)
+    elif isinstance(value, list):
+        for idx, item in enumerate(value):
+            found.extend(_pending_markers(item, "%s[%d]" % (path, idx)))
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            found.extend(_pending_markers(item, "%s.%s" % (path, key)))
+    return found
 
 def _is_nonempty_str(value):
     return isinstance(value, str) and value.strip() != ""
@@ -115,6 +133,12 @@ def validate_project(project):
     if manifest is None:
         return errors, warnings, None, []
 
+    # Marcador de pendencia em qualquer metadado
+    for key, value in manifest.items():
+        for where in _pending_markers(value, key):
+            errors.append("metadado pendente: %s contem o marcador [PREENCHER ...]; "
+                          "substitua pelo valor real antes de validar/compilar" % where)
+
     # Campos obrigatorios
     for field in REQUIRED_FIELDS:
         if field not in manifest:
@@ -175,6 +199,10 @@ def validate_project(project):
                     errors.append(err)
                 else:
                     texts.append(text)
+                    pending = len(_PENDING_RE.findall(text))
+                    if pending:
+                        warnings.append("chapters/%s contem %d marcador(es) [PREENCHER] pendente(s)"
+                                        % (name, pending))
             if os.path.isdir(chapters_dir):
                 listed = set(n for n in chapters if isinstance(n, str))
                 for extra in sorted(os.listdir(chapters_dir)):
@@ -188,13 +216,77 @@ def validate_project(project):
 # --------------------------------------------------------------------------
 # Suportado: titulos ATX, paragrafos, listas (um nivel), citacoes, blocos de
 # codigo com cerca, linha horizontal, enfase/negrito, codigo inline, links.
-# Nao suportado: tabelas, listas aninhadas, HTML cru, imagens (viram o texto alt).
+# Tabelas "pipe" (com linha |---|) e \\newpage/\\pagebreak/\\clearpage (linha unica).
+# Nao suportado: listas aninhadas, HTML cru, imagens (viram o texto alt).
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _HR_RE = re.compile(r"^\s{0,3}([-*_])(\s*\1){2,}\s*$")
 _UL_RE = re.compile(r"^\s{0,3}[-*+]\s+(.*)$")
 _OL_RE = re.compile(r"^\s{0,3}\d{1,9}[.)]\s+(.*)$")
 _FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+_PAGEBREAK_RE = re.compile(r"^\s*\\(?:newpage|pagebreak|clearpage|cleardoublepage)\s*(?:\{\}|\[[^\]]*\])?\s*$")
+_TABLE_SEP_CELL_RE = re.compile(r"^:?-+:?$")
+
+
+def is_pagebreak(line):
+    """Linha que contem apenas \\newpage, \\pagebreak, \\clearpage ou \\cleardoublepage."""
+    return bool(_PAGEBREAK_RE.match(line))
+
+
+def split_row(line):
+    """Divide uma linha de tabela em celulas (respeita \\| e codigo inline)."""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|") and not s.endswith("\\|"):
+        s = s[:-1]
+    cells, cur, in_code, i = [], [], False, 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s):
+            # \| dentro de codigo vira "|" literal; fora, o escape e tratado no inline
+            cur.append("|" if (in_code and s[i + 1] == "|") else s[i:i + 2])
+            i += 2
+            continue
+        if ch == "`":
+            in_code = not in_code
+        if ch == "|" and not in_code:
+            cells.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    cells.append("".join(cur).strip())
+    return cells
+
+
+def find_table(lines, i):
+    """Se lines[i] abre uma tabela (cabecalho + linha |---|), devolve
+    (cabecalhos, alinhamentos, linhas, proximo_indice); senao None."""
+    if i + 1 >= len(lines) or "|" not in lines[i] or "|" not in lines[i + 1]:
+        return None
+    sep = split_row(lines[i + 1])
+    if not sep or not all(_TABLE_SEP_CELL_RE.match(c) for c in sep):
+        return None
+    headers = split_row(lines[i])
+    if len(headers) != len(sep):
+        return None
+    aligns = []
+    for c in sep:
+        if c.startswith(":") and c.endswith(":"):
+            aligns.append("center")
+        elif c.endswith(":"):
+            aligns.append("right")
+        else:
+            aligns.append("left")
+    rows = []
+    j = i + 2
+    while j < len(lines) and lines[j].strip() != "" and "|" in lines[j]:
+        cells = split_row(lines[j])
+        cells = (cells + [""] * len(headers))[:len(headers)]
+        rows.append(cells)
+        j += 1
+    return headers, aligns, rows, j
 
 
 def parse_blocks(text):
@@ -236,6 +328,18 @@ def _parse_lines(lines):
             flush()
             blocks.append(("h", len(m.group(1)), m.group(2)))
             i += 1
+            continue
+        if is_pagebreak(line):
+            flush()
+            if not blocks or blocks[-1][0] != "pagebreak":
+                blocks.append(("pagebreak",))
+            i += 1
+            continue
+        table = find_table(lines, i)
+        if table:
+            flush()
+            blocks.append(("table", table[0], table[1], table[2]))
+            i = table[3]
             continue
         if _HR_RE.match(line):
             flush()
@@ -289,7 +393,11 @@ _EM_UND_RE = re.compile(r"(?<!\w)_(?=\S)(.+?)(?<=\S)_(?!\w)")
 _PUA = "\ue000"
 
 
+_INLINE_LATEX_RE = re.compile(r"[ \t]*\\(?:newpage|pagebreak|clearpage|cleardoublepage)\b(?:\{\})?")
+
+
 def _protect(text, store):
+    text = _INLINE_LATEX_RE.sub("", text)  # nunca vazar como texto
     def esc(m):
         store.append(m.group(1))
         return _PUA + chr(0xE100 + len(store) - 1) + _PUA
@@ -329,7 +437,7 @@ def inline_html(text):
     return _restore(text, store, True)
 
 
-def inline_plain(text):
+def inline_plain(text, strip_tags=True):
     store = []
     codes = []
 
@@ -343,7 +451,8 @@ def inline_plain(text):
     text = _BOLD_RE.sub(r"\2", text)
     text = _EM_STAR_RE.sub(r"\1", text)
     text = _EM_UND_RE.sub(r"\1", text)
-    text = re.sub(r"</?[A-Za-z][^>]*>", "", text)  # tags HTML cruas
+    if strip_tags:
+        text = re.sub(r"</?[A-Za-z][^>]*>", "", text)  # tags HTML cruas
     text = re.sub("\ue001(\\d+)\ue001", lambda m: codes[int(m.group(1))], text)
     return _restore(text, store, False)
 
@@ -365,7 +474,23 @@ def blocks_to_html(blocks):
             out.append("<pre><code>%s</code></pre>" % html.escape(b[1], quote=False))
         elif kind == "hr":
             out.append("<hr/>")
+        elif kind == "pagebreak":
+            out.append('<div class="pagebreak"></div>')
+        elif kind == "table":
+            out.append(_table_html(b[1], b[2], b[3]))
     return "\n".join(out)
+
+
+def _table_html(headers, aligns, rows):
+    def cell(tag, text, align):
+        style = "" if align == "left" else ' style="text-align:%s"' % align
+        return "<%s%s>%s</%s>" % (tag, style, inline_html(text), tag)
+    head = "<tr>%s</tr>" % "".join(cell("th", h, a) for h, a in zip(headers, aligns))
+    body = "\n".join("<tr>%s</tr>" % "".join(cell("td", c, a) for c, a in zip(r, aligns)) for r in rows)
+    out = "<table>\n<thead>\n%s\n</thead>\n" % head
+    if rows:
+        out += "<tbody>\n%s\n</tbody>\n" % body
+    return out + "</table>"
 
 
 PAUSE_SHORT = "[pausa]"
@@ -390,7 +515,29 @@ def blocks_to_narration(blocks):
                 out.append(b[1].strip("\n"))
         elif kind == "hr":
             out.append(PAUSE_SHORT)
+        elif kind == "pagebreak":
+            out.append(PAUSE_LONG)
+        elif kind == "table":
+            out.append(PAUSE_SHORT)
+            out.append(_table_narration(b[1], b[2], b[3]))
     return out
+
+
+def _table_narration(headers, aligns, rows):
+    """Cada linha vira uma frase: 'Cabecalho1: valor, Cabecalho2: valor.'"""
+    sentences = []
+    for row in rows:
+        parts = []
+        for head, cell in zip(headers, row):
+            value = " ".join(inline_plain(cell).split())
+            if not value:
+                continue
+            label = inline_plain(head).strip()
+            parts.append("%s: %s" % (label, value) if label else value)
+        if parts:
+            sentence = ", ".join(parts)
+            sentences.append(sentence if sentence.endswith(".") else sentence + ".")
+    return "\n".join(sentences)
 
 
 def first_heading(blocks):
@@ -404,24 +551,105 @@ def first_heading(blocks):
 # Saidas
 # --------------------------------------------------------------------------
 
+def _display_width(text):
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def _pad(text, width, align):
+    gap = max(width - _display_width(text), 0)
+    if align == "right":
+        return " " * gap + text
+    if align == "center":
+        return " " * (gap // 2) + text + " " * (gap - gap // 2)
+    return text + " " * gap
+
+
+def table_to_text(headers, aligns, rows):
+    """Tabela monoespacada alinhada, sem barras verticais."""
+    grid = [[inline_plain(c, strip_tags=False).strip() for c in headers]]
+    grid += [[inline_plain(c, strip_tags=False).strip() for c in r] for r in rows]
+    widths = [max(max(_display_width(r[k]), 3) for r in grid) for k in range(len(headers))]
+
+    def line(cells):
+        return "  ".join(_pad(c, w, a) for c, w, a in zip(cells, widths, aligns)).rstrip()
+    out = [line(grid[0]), "  ".join("-" * w for w in widths)]
+    out += [line(r) for r in grid[1:]]
+    return out
+
+
+def chapter_to_txt(text):
+    """Texto do capitulo para o txt: igual ao original (Markdown preservado),
+    exceto tabelas (alinhadas em texto) e \\newpage & cia (linha em branco)."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out, i, n = [], 0, len(lines)
+    while i < n:
+        line = lines[i]
+        fence = _FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            out.append(line)
+            i += 1
+            while i < n and not lines[i].lstrip().startswith(marker):
+                out.append(lines[i])
+                i += 1
+            if i < n:
+                out.append(lines[i])
+                i += 1
+            continue
+        if is_pagebreak(line):
+            if out and out[-1].strip() != "":
+                out.append("")
+            i += 1
+            while i < n and lines[i].strip() == "":
+                i += 1
+            continue
+        table = find_table(lines, i)
+        if table:
+            if out and out[-1].strip() != "":
+                out.append("")
+            out.extend(table_to_text(table[0], table[1], table[2]))
+            i = table[3]
+            if i < n and lines[i].strip() != "":
+                out.append("")
+            continue
+        out.append(_INLINE_LATEX_RE.sub("", line))
+        i += 1
+    return "\n".join(out)
+
+
 def build_txt(manifest, texts):
     parts = ["%s\n%s" % (manifest["title"], manifest["author"])]
     for t in texts:
-        parts.append(t.replace("\r\n", "\n").replace("\r", "\n").strip("\n"))
+        parts.append(chapter_to_txt(t).strip("\n"))
     return "\n\n".join(parts) + "\n"
 
 
 def build_ragnarok(manifest, texts):
     parts = ["%s\npor %s" % (manifest["title"], manifest["author"])]
     for t in texts:
-        paras = blocks_to_narration(parse_blocks(t))
         parts.append(PAUSE_LONG)
-        parts.append("\n\n".join(paras))
-    return "\n\n".join(parts) + "\n"
+        parts.extend(blocks_to_narration(parse_blocks(t)))
+    deduped = []
+    for p in parts:  # pausas iguais consecutivas viram uma so
+        if deduped and p == deduped[-1] and p in (PAUSE_SHORT, PAUSE_LONG):
+            continue
+        deduped.append(p)
+    return "\n\n".join(deduped) + "\n"
 
 
 _CSS = ("body{font-family:serif;line-height:1.4}h1,h2,h3{font-family:sans-serif}"
-        "pre{white-space:pre-wrap}blockquote{margin-left:1.5em;font-style:italic}\n")
+        "pre{white-space:pre-wrap}blockquote{margin-left:1.5em;font-style:italic}"
+        "table{border-collapse:collapse;width:100%;margin:1em 0;font-size:0.75em}"
+        "th,td{border:1px solid #888;padding:0.2em 0.3em;text-align:left;vertical-align:top;"
+        "overflow-wrap:anywhere}"
+        "th{background:#e8e8e8;font-weight:bold}tr{page-break-inside:avoid}"
+        "thead{display:table-header-group}"
+        ".pagebreak{page-break-after:always;break-after:page}\n")
 
 
 def _xhtml(lang, title, body):
@@ -505,7 +733,7 @@ def build_pdf(manifest, names, texts, dest):
             % (html.escape(manifest["title"], quote=False), html.escape(manifest["author"], quote=False)))
     body += "".join('<section class="chapter">%s</section>' % b for _f, _t, b in docs)
     page = ('<!DOCTYPE html><html lang="%s"><head><meta charset="utf-8"/><title>%s</title>'
-            '<style>%s@page{size:A5;margin:2cm}.title{text-align:center;margin-top:5cm}'
+            '<style>%s@page{size:A5;margin:1.7cm}.title{text-align:center;margin-top:5cm}'
             '.author{text-align:center}.chapter{page-break-before:always}</style></head><body>%s</body></html>'
             % (lang, html.escape(manifest["title"], quote=False), _CSS, body))
     weasyprint.HTML(string=page).write_pdf(dest)
