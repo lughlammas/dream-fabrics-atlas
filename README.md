@@ -15,6 +15,8 @@ python3 atlas.py validate <dir>   # sai com código 1 se houver erro
 python3 atlas.py build <dir>      # roda validate; gera <dir>/build/
 ```
 
+Interface gráfica (tkinter): `python3 atlas_gui.py` ou `ATLAS.bat` no Windows — ver [INSTALAR.md](INSTALAR.md).
+
 Exemplo pronto (2 capítulos): `python3 atlas.py build examples/livro-exemplo`.
 
 ### Estrutura de um projeto
