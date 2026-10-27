@@ -1,0 +1,10 @@
+{
+  "atlas_version": "1.0",
+  "id": "tomo_02_calistenia",
+  "title": "Calistenia",
+  "author": "",
+  "volume": 2,
+  "language": "pt-BR",
+  "chapters": ["00_abertura.md", "01_capitulo_um.md"],
+  "outputs": ["txt", "epub", "pdf", "ragnarok"]
+}
