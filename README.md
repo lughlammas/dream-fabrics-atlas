@@ -99,3 +99,12 @@ só foi conferido como texto).
 ## Pendências
 Os pontos técnicos ainda a formalizar estão em `docs/SPEC-v1.0.md` (`[PREENCHER — dado do autor]`).
 O campo `author` do exemplo (`Autor de Exemplo`) é apenas um valor de demonstração.
+
+## Audiobook Factory
+
+A aplicação web local para produzir audiobooks está documentada em [README_FACTORY.md](README_FACTORY.md).
+Inicie com `.\START_FACTORY.ps1` e abra http://127.0.0.1:18765.
+
+## SAMIX
+
+O estúdio musical local e sua integração ACE-Step 1.5 estão documentados em [README_SAMIX.md](README_SAMIX.md).
