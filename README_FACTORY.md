@@ -16,7 +16,7 @@ Abra `http://127.0.0.1:18765`. O servidor escuta apenas em `127.0.0.1`.
 Se o PowerShell bloquear scripts, execute diretamente com Python 3:
 
 ```powershell
-& 'C:\Users\ASUS\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe' .\factory_server.py
+py -3 .\factory_server.py
 ```
 
 Para usar outro diretório de dados ou outra porta:
